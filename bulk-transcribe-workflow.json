@@ -1,0 +1,234 @@
+{
+  "name": "Bulk Transcribe All Videos in Folder",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [120, 300]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "queryString": "='REPLACE_WITH_DRIVE_FOLDER_ID' in parents and mimeType contains 'video/' and trashed = false",
+        "limit": 1000,
+        "filter": {},
+        "options": {}
+      },
+      "id": "list-videos",
+      "name": "List Videos in Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [320, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_WITH_GDRIVE_CRED_ID",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop",
+      "name": "Loop Over Videos",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "download-video",
+      "name": "Download Video",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [720, 260],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_WITH_GDRIVE_CRED_ID",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst j = item.json;\nconst name = j.name || 'video';\nconst ext = name.includes('.') ? name.split('.').pop() : 'mp4';\nconst base = name.replace(/\\.[^.]+$/, '');\nconst id = (j.id || 'x').replace(/[^A-Za-z0-9_-]/g, '_');\nconst workDir = `/tmp/n8n-transcribe-${id}-${Date.now()}`;\n\nreturn {\n  json: {\n    ...j,\n    originalName: name,\n    baseName: base,\n    workDir,\n    inputPath: `${workDir}/input.${ext}`,\n    chunksDir: `${workDir}/chunks`\n  },\n  binary: item.binary\n};"
+      },
+      "id": "prepare-paths",
+      "name": "Prepare Paths",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 260]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $json.inputPath }}",
+        "dataPropertyName": "data",
+        "options": {
+          "append": false
+        }
+      },
+      "id": "write-video",
+      "name": "Write Video to Disk",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [1120, 260]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { execFileSync } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\n\nconst first = $input.first().json;\nconst { chunksDir, inputPath } = first;\n\nfs.mkdirSync(chunksDir, { recursive: true });\n\ntry {\n  execFileSync('ffmpeg', [\n    '-y', '-loglevel', 'error',\n    '-i', inputPath,\n    '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k',\n    '-f', 'segment', '-segment_time', '600', '-reset_timestamps', '1',\n    path.join(chunksDir, 'chunk_%03d.mp3')\n  ], { stdio: ['ignore', 'pipe', 'pipe'] });\n} catch (e) {\n  const stderr = e.stderr ? e.stderr.toString() : '';\n  throw new Error('ffmpeg failed: ' + (stderr || e.message));\n}\n\nconst files = fs.readdirSync(chunksDir)\n  .filter(f => f.endsWith('.mp3'))\n  .sort()\n  .map(f => path.join(chunksDir, f));\n\nif (files.length === 0) {\n  throw new Error('ffmpeg produced no chunks in ' + chunksDir);\n}\n\nreturn files.map((p, i) => ({ json: { chunkPath: p, chunkIndex: i } }));"
+      },
+      "id": "ffmpeg-split",
+      "name": "Extract & Split Audio (ffmpeg)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 260]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $json.chunkPath }}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "read-chunk",
+      "name": "Read Chunk",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [1520, 260]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "transcribe",
+      "name": "Transcribe (Whisper)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [1720, 260],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_OPENAI_CRED_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst text = items.map(i => (i.json.text || '').trim()).filter(Boolean).join('\\n\\n');\nconst base = $('Prepare Paths').first().json.baseName || 'transcript';\nconst fileName = `${base}.txt`;\n\nreturn [{\n  json: { fileName, text },\n  binary: {\n    data: {\n      data: Buffer.from(text, 'utf8').toString('base64'),\n      mimeType: 'text/plain',\n      fileName\n    }\n  }\n}];"
+      },
+      "id": "join-transcripts",
+      "name": "Join Transcripts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 260]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "name": "={{ $json.fileName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_DRIVE_FOLDER_ID",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "upload-transcript",
+      "name": "Upload Transcript",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2120, 260],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_WITH_GDRIVE_CRED_ID",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\nconst workDir = $('Prepare Paths').first().json.workDir;\ntry {\n  fs.rmSync(workDir, { recursive: true, force: true });\n} catch (e) {}\nreturn [{ json: { cleaned: true, workDir } }];"
+      },
+      "id": "cleanup",
+      "name": "Cleanup Tmp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2320, 260]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "List Videos in Folder", "type": "main", "index": 0 }]]
+    },
+    "List Videos in Folder": {
+      "main": [[{ "node": "Loop Over Videos", "type": "main", "index": 0 }]]
+    },
+    "Loop Over Videos": {
+      "main": [
+        [],
+        [{ "node": "Download Video", "type": "main", "index": 0 }]
+      ]
+    },
+    "Download Video": {
+      "main": [[{ "node": "Prepare Paths", "type": "main", "index": 0 }]]
+    },
+    "Prepare Paths": {
+      "main": [[{ "node": "Write Video to Disk", "type": "main", "index": 0 }]]
+    },
+    "Write Video to Disk": {
+      "main": [[{ "node": "Extract & Split Audio (ffmpeg)", "type": "main", "index": 0 }]]
+    },
+    "Extract & Split Audio (ffmpeg)": {
+      "main": [[{ "node": "Read Chunk", "type": "main", "index": 0 }]]
+    },
+    "Read Chunk": {
+      "main": [[{ "node": "Transcribe (Whisper)", "type": "main", "index": 0 }]]
+    },
+    "Transcribe (Whisper)": {
+      "main": [[{ "node": "Join Transcripts", "type": "main", "index": 0 }]]
+    },
+    "Join Transcripts": {
+      "main": [[{ "node": "Upload Transcript", "type": "main", "index": 0 }]]
+    },
+    "Upload Transcript": {
+      "main": [[{ "node": "Cleanup Tmp", "type": "main", "index": 0 }]]
+    },
+    "Cleanup Tmp": {
+      "main": [[{ "node": "Loop Over Videos", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "description": "One-shot bulk run: lists all videos in a Drive folder and transcribes each (sequentially, chunked via ffmpeg + Whisper). Requires ffmpeg in the n8n container and NODE_FUNCTION_ALLOW_BUILTIN=child_process,fs,path."
+  }
+}
