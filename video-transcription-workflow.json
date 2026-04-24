@@ -135,20 +135,30 @@
     },
     {
       "parameters": {
-        "resource": "audio",
-        "operation": "transcribe",
-        "binaryPropertyName": "data",
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/audio/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "whisper-large-v3-turbo" },
+            { "name": "language", "value": "de" },
+            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }
+          ]
+        },
         "options": {}
       },
       "id": "transcribe",
-      "name": "Transcribe (Whisper)",
-      "type": "@n8n/n8n-nodes-langchain.openAi",
-      "typeVersion": 1.8,
+      "name": "Transcribe (Groq Whisper)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [1520, 260],
       "credentials": {
-        "openAiApi": {
-          "id": "REPLACE_WITH_OPENAI_CRED_ID",
-          "name": "OpenAI account"
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_GROQ_CRED_ID",
+          "name": "Groq API"
         }
       }
     },
@@ -223,9 +233,9 @@
       "main": [[{ "node": "Read Chunk", "type": "main", "index": 0 }]]
     },
     "Read Chunk": {
-      "main": [[{ "node": "Transcribe (Whisper)", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Transcribe (Groq Whisper)", "type": "main", "index": 0 }]]
     },
-    "Transcribe (Whisper)": {
+    "Transcribe (Groq Whisper)": {
       "main": [[{ "node": "Join Transcripts", "type": "main", "index": 0 }]]
     },
     "Join Transcripts": {
