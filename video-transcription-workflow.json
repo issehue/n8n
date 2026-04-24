@@ -110,24 +110,14 @@
     },
     {
       "parameters": {
-        "command": "=mkdir -p \"{{ $json.chunksDir }}\" && ffmpeg -y -loglevel error -i \"{{ $json.inputPath }}\" -vn -ac 1 -ar 16000 -b:a 64k -f segment -segment_time 600 -reset_timestamps 1 \"{{ $json.chunksDir }}/chunk_%03d.mp3\" && ls \"{{ $json.chunksDir }}\"/*.mp3 | sort"
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { execFileSync } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\n\nconst first = $input.first().json;\nconst { chunksDir, inputPath } = first;\n\nfs.mkdirSync(chunksDir, { recursive: true });\n\ntry {\n  execFileSync('ffmpeg', [\n    '-y', '-loglevel', 'error',\n    '-i', inputPath,\n    '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k',\n    '-f', 'segment', '-segment_time', '600', '-reset_timestamps', '1',\n    path.join(chunksDir, 'chunk_%03d.mp3')\n  ], { stdio: ['ignore', 'pipe', 'pipe'] });\n} catch (e) {\n  const stderr = e.stderr ? e.stderr.toString() : '';\n  throw new Error('ffmpeg failed: ' + (stderr || e.message));\n}\n\nconst files = fs.readdirSync(chunksDir)\n  .filter(f => f.endsWith('.mp3'))\n  .sort()\n  .map(f => path.join(chunksDir, f));\n\nif (files.length === 0) {\n  throw new Error('ffmpeg produced no chunks in ' + chunksDir);\n}\n\nreturn files.map((p, i) => ({ json: { chunkPath: p, chunkIndex: i } }));"
       },
       "id": "ffmpeg-split",
       "name": "Extract & Split Audio (ffmpeg)",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [1120, 260]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "const stdout = $input.first().json.stdout || '';\nconst paths = stdout.split('\\n').map(s => s.trim()).filter(Boolean);\nif (paths.length === 0) {\n  throw new Error('ffmpeg produced no chunks. stderr: ' + ($input.first().json.stderr || ''));\n}\nreturn paths.map((p, i) => ({ json: { chunkPath: p, chunkIndex: i } }));"
-      },
-      "id": "parse-chunks",
-      "name": "Parse Chunk List",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1320, 260]
+      "position": [1120, 260]
     },
     {
       "parameters": {
@@ -141,7 +131,7 @@
       "name": "Read Chunk",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
-      "position": [1520, 260]
+      "position": [1320, 260]
     },
     {
       "parameters": {
@@ -154,7 +144,7 @@
       "name": "Transcribe (Whisper)",
       "type": "@n8n/n8n-nodes-langchain.openAi",
       "typeVersion": 1.8,
-      "position": [1720, 260],
+      "position": [1520, 260],
       "credentials": {
         "openAiApi": {
           "id": "REPLACE_WITH_OPENAI_CRED_ID",
@@ -171,7 +161,7 @@
       "name": "Join Transcripts",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1920, 260]
+      "position": [1720, 260]
     },
     {
       "parameters": {
@@ -193,7 +183,7 @@
       "name": "Upload Transcript",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
-      "position": [2120, 260],
+      "position": [1920, 260],
       "credentials": {
         "googleDriveOAuth2Api": {
           "id": "REPLACE_WITH_GDRIVE_CRED_ID",
@@ -203,13 +193,14 @@
     },
     {
       "parameters": {
-        "command": "=rm -rf \"{{ $('Prepare Paths').first().json.workDir }}\""
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\nconst workDir = $('Prepare Paths').first().json.workDir;\ntry {\n  fs.rmSync(workDir, { recursive: true, force: true });\n} catch (e) {\n  // ignore cleanup errors\n}\nreturn [{ json: { cleaned: true, workDir } }];"
       },
       "id": "cleanup",
       "name": "Cleanup Tmp",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [2320, 260]
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2120, 260]
     }
   ],
   "connections": {
@@ -229,9 +220,6 @@
       "main": [[{ "node": "Extract & Split Audio (ffmpeg)", "type": "main", "index": 0 }]]
     },
     "Extract & Split Audio (ffmpeg)": {
-      "main": [[{ "node": "Parse Chunk List", "type": "main", "index": 0 }]]
-    },
-    "Parse Chunk List": {
       "main": [[{ "node": "Read Chunk", "type": "main", "index": 0 }]]
     },
     "Read Chunk": {
@@ -252,6 +240,6 @@
   },
   "pinData": {},
   "meta": {
-    "description": "Watches a Google Drive folder for new video files, extracts audio with ffmpeg, splits into 10-minute chunks to stay under the Whisper 25 MB limit, transcribes each chunk via OpenAI Whisper, joins the results and uploads the transcript as a .txt file back to the same folder."
+    "description": "Watches a Google Drive folder for new video files, extracts audio with ffmpeg (invoked via child_process from a Code node), splits into 10-minute chunks to stay under the Whisper 25 MB limit, transcribes each chunk via OpenAI Whisper, joins the results and uploads the transcript as a .txt file back to the same folder. Requires NODE_FUNCTION_ALLOW_BUILTIN=child_process,fs,path in n8n env."
   }
 }
